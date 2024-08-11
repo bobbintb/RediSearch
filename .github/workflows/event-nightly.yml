@@ -29,7 +29,11 @@ jobs:
     secrets: inherit
 
   sanitize:
-    uses: ./.github/workflows/flow-sanitizer.yml
     secrets: inherit
+    uses: ./.github/workflows/task-test.yml
     with:
-      flow-config: QUICK=1
+      get-redis: ${{ needs.get-latest-redis-tag.outputs.tag }}
+      test-config: QUICK=1
+      san: address
+      env: ubuntu-latest
+      rejson: 0
