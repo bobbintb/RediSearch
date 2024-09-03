@@ -5,8 +5,7 @@ class TestDebugCommands(object):
     def __init__(self):
         skipTest(cluster=True)
         self.workers_count = 2
-        module_args = f'WORKERS {self.workers_count}' if MT_BUILD else ''
-        self.env = Env(testName="testing debug commands", moduleArgs=module_args)
+        self.env = Env(testName="testing debug commands", moduleArgs=f'WORKERS {self.workers_count}')
         self.env.expect('FT.CREATE', 'idx', 'ON', 'HASH', 'SCHEMA',
                         'name', 'TEXT', 'SORTABLE',
                         'age', 'NUMERIC', 'SORTABLE',
@@ -26,19 +25,16 @@ class TestDebugCommands(object):
                      'DUMP_PREFIX_TRIE', 'IDTODOCID', 'DOCIDTOID', 'DOCINFO', 'DUMP_PHONETIC_HASH', 'DUMP_SUFFIX_TRIE',
                      'DUMP_TERMS', 'INVIDX_SUMMARY', 'NUMIDX_SUMMARY', 'GC_FORCEINVOKE', 'GC_FORCEBGINVOKE', 'GC_CLEAN_NUMERIC',
                      'GC_STOP_SCHEDULE', 'GC_CONTINUE_SCHEDULE', 'GC_WAIT_FOR_JOBS', 'GIT_SHA', 'TTL', 'TTL_PAUSE',
-                     'TTL_EXPIRE', 'VECSIM_INFO', 'DELETE_LOCAL_CURSORS', 'DUMP_HNSW']
-        if MT_BUILD:
-            help_list.append('WORKERS')
+                     'TTL_EXPIRE', 'VECSIM_INFO', 'DELETE_LOCAL_CURSORS', 'DUMP_HNSW', 'WORKERS']
         if COORD_BUILD:
-            coord_help_list = ['SHARD_CONNECTION_STATES']
+            coord_help_list = ['SHARD_CONNECTION_STATES', 'PAUSE_TOPOLOGY_UPDATER', 'RESUME_TOPOLOGY_UPDATER']
             help_list.extend(coord_help_list)
 
         self.env.expect(debug_cmd(), 'help').equal(help_list)
 
-        for cmd in help_list:
-            if cmd in ['GIT_SHA', 'DUMP_PREFIX_TRIE', 'GC_WAIT_FOR_JOBS', 'DELETE_LOCAL_CURSORS', 'SHARD_CONNECTION_STATES']:
-                # 'GIT_SHA' and 'DUMP_PREFIX_TRIE' do not return err_msg
-                 continue
+        arity_2_cmds = ['GIT_SHA', 'DUMP_PREFIX_TRIE', 'GC_WAIT_FOR_JOBS', 'DELETE_LOCAL_CURSORS', 'SHARD_CONNECTION_STATES',
+                        'PAUSE_TOPOLOGY_UPDATER', 'RESUME_TOPOLOGY_UPDATER']
+        for cmd in [c for c in help_list if c not in arity_2_cmds]:
             self.env.expect(debug_cmd(), cmd).error().contains(err_msg)
 
     def testDocInfo(self):
@@ -218,8 +214,6 @@ class TestDebugCommands(object):
 
 
     def testStopAndResumeWorkersPool(self):
-        if not MT_BUILD:
-            self.env.skip()
         self.env.expect(debug_cmd(), 'WORKERS').error().contains(
             f"wrong number of arguments for '{debug_cmd()}|WORKERS' command")
         self.env.expect(debug_cmd(), 'WORKERS', 'invalid').error().contains(
@@ -232,8 +226,6 @@ class TestDebugCommands(object):
             .contains("Operation failed: workers thread pool doesn't exists or is already running")
 
     def testWorkersPoolDrain(self):
-        if not MT_BUILD:
-            self.env.skip()
         # test stats and drain
         orig_stats = getWorkersThpoolStats(self.env)
         self.env.expect(debug_cmd(), 'WORKERS', 'pause').ok()
@@ -262,8 +254,6 @@ class TestDebugCommands(object):
                                      'numThreadsAlive': self.workers_count})
 
     def testWorkersNumThreads(self):
-        if not MT_BUILD:
-            self.env.skip()
         # test stats and drain
         self.env.expect(debug_cmd(), 'WORKERS', 'n_threads').equal(self.workers_count)
 
@@ -314,3 +304,9 @@ def testCoordDebug(env: Env):
     env.expect(debug_cmd(), 'SHARD_CONNECTION_STATES').noError()
     # Look for the coordinator only command in the help command
     env.expect(debug_cmd(), 'HELP').contains('SHARD_CONNECTION_STATES')
+
+    # Test topology updater pause and resume
+    env.expect(debug_cmd(), 'PAUSE_TOPOLOGY_UPDATER').ok()
+    env.expect(debug_cmd(), 'PAUSE_TOPOLOGY_UPDATER').error().contains('Topology updater is already paused')
+    env.expect(debug_cmd(), 'RESUME_TOPOLOGY_UPDATER').ok()
+    env.expect(debug_cmd(), 'RESUME_TOPOLOGY_UPDATER').error().contains('Topology updater is already running')

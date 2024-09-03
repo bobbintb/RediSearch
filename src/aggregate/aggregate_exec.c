@@ -17,6 +17,7 @@
 #include "profile.h"
 #include "query_optimizer.h"
 #include "resp3.h"
+#include "query_error.h"
 
 typedef enum { COMMAND_AGGREGATE, COMMAND_SEARCH, COMMAND_EXPLAIN } CommandType;
 
@@ -446,8 +447,6 @@ static void sendChunk_Resp2(AREQ *req, RedisModule_Reply *reply, size_t limit,
       QOptimizer_UpdateTotalResults(req);
     }
 
-
-
     // Upon `FT.PROFILE` commands, embed the response inside another map
     if (IsProfile(req)) {
       Profile_PrepareMapForReply(reply);
@@ -497,7 +496,7 @@ done_2:
       if (cursor_done) {
         RedisModule_Reply_LongLong(reply, 0);
         if (IsProfile(req)) {
-          req->profile(reply, req, has_timedout);
+          req->profile(reply, req, has_timedout, req->qiter.err->reachedMaxPrefixExpansions);
         }
       } else {
         RedisModule_Reply_LongLong(reply, req->cursor_id);
@@ -508,7 +507,7 @@ done_2:
       }
       RedisModule_Reply_ArrayEnd(reply);
     } else if (IsProfile(req)) {
-      req->profile(reply, req, has_timedout);
+      req->profile(reply, req, has_timedout, req->qiter.err->reachedMaxPrefixExpansions);
       RedisModule_Reply_ArrayEnd(reply);
     }
 
@@ -523,7 +522,7 @@ done_2_err:
 
 /**
  * Sends a chunk of <n> rows in the resp3 format
-*/
+**/
 static void sendChunk_Resp3(AREQ *req, RedisModule_Reply *reply, size_t limit,
   cachedVars cv) {
     SearchResult r = {0};
@@ -619,6 +618,8 @@ done_3:
     } else if (rc == RS_RESULT_ERROR) {
       // Non-fatal error
       RedisModule_Reply_SimpleString(reply, QueryError_GetError(req->qiter.err));
+    } else if (req->qiter.err->reachedMaxPrefixExpansions) {
+      RedisModule_Reply_SimpleString(reply, QUERY_WMAXPREFIXEXPANSIONS);
     }
     RedisModule_Reply_ArrayEnd(reply); // >warnings
 
@@ -631,7 +632,7 @@ done_3:
     if (IsProfile(req)) {
       RedisModule_Reply_MapEnd(reply); // >Results
       if (!(req->reqflags & QEXEC_F_IS_CURSOR) || cursor_done) {
-        req->profile(reply, req, has_timedout);
+        req->profile(reply, req, has_timedout, req->qiter.err->reachedMaxPrefixExpansions);
       }
     }
 
@@ -910,7 +911,6 @@ static int execCommandCommon(RedisModuleCtx *ctx, RedisModuleString **argv, int 
   SET_DIALECT(r->sctx->spec->used_dialects, r->reqConfig.dialectVersion);
   SET_DIALECT(RSGlobalConfig.used_dialects, r->reqConfig.dialectVersion);
 
-#ifdef MT_BUILD
   if (RunInThread()) {
     // Prepare context for the worker thread
     // Since we are still in the main thread, and we already validated the
@@ -925,9 +925,7 @@ static int execCommandCommon(RedisModuleCtx *ctx, RedisModuleString **argv, int 
     r->reqflags |= QEXEC_F_RUN_IN_BACKGROUND;
 
     workersThreadPool_AddWork((redisearch_thpool_proc)AREQ_Execute_Callback, BCRctx);
-  } else
-#endif // MT_BUILD
-  {
+  } else {
     // Take a read lock on the spec (to avoid conflicts with the GC).
     // This is released in AREQ_Free or while executing the query.
     RedisSearchCtx_LockSpecRead(r->sctx);
@@ -1181,7 +1179,6 @@ int RSCursorCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
         return REDISMODULE_OK;
       }
     }
-#ifdef MT_BUILD
     // We have to check that we are not blocked yet from elsewhere (e.g. coordinator)
     if (RunInThread() && !RedisModule_GetBlockedClientHandle(ctx)) {
       CursorReadCtx *cr_ctx = rm_new(CursorReadCtx);
@@ -1190,9 +1187,7 @@ int RSCursorCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
       cr_ctx->count = count;
       RedisModule_BlockedClientMeasureTimeStart(cr_ctx->bc);
       workersThreadPool_AddWork((redisearch_thpool_proc)cursorRead_ctx, cr_ctx);
-    } else
-#endif
-    {
+    } else {
       cursorRead(reply, cid, count, false);
     }
   } else if (strcasecmp(cmd, "DEL") == 0) {
